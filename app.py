@@ -1,3 +1,15 @@
+from fastapi import FastAPI
+app = FastAPI()
+
+@app.get("/")
+async def root():
+    return {"ok": True}
+
+@app.get("/health")
+async def health():
+    return {"ok": True}
+
+
 import os
 from fastapi import FastAPI, Query, Header, HTTPException
 from chizhik_api import ChizhikAPI
