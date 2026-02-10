@@ -3,24 +3,21 @@ from typing import Optional
 
 from fastapi import FastAPI, Query, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-
 from chizhik_api import ChizhikAPI
 
 # =========================
-# Настройки через env
+# ENV настройки
 # =========================
-API_KEY = os.getenv("API_KEY")  # закрывает "не public" эндпоинты
-PROXY = os.getenv("CHIZHIK_PROXY")  # опционально: user:pass@host:port или http://...
+API_KEY = os.getenv("API_KEY")  # защищает всё, что НЕ /public/*
+PROXY = os.getenv("CHIZHIK_PROXY")  # опционально
 HEADLESS = os.getenv("CHIZHIK_HEADLESS", "true").lower() == "true"
 
-app = FastAPI(title="Cenopad Backend API", version="1.0.0")
+app = FastAPI(title="Cenopad Backend", version="1.0.0")
 
 # =========================
-# CORS (для отдельного фронтенда на другом домене)
+# CORS для отдельного фронтенда (chizhick.ru)
+# Можно оставить "*" чтобы не пересобирать бэкенд при смене домена фронта.
 # =========================
-# Чтобы не пересобирать бэкенд каждый раз при смене домена фронта — оставляем "*".
-# Тут безопасно, потому что мы открываем только /public/* (они и так публичные),
-# а приватные эндпоинты всё равно под API_KEY.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -30,20 +27,21 @@ app.add_middleware(
 )
 
 # =========================
-# API-key защита (не трогаем /public, /health и swagger)
+# API-key защита
+# Всё, что не /public/* и не служебное — требует X-API-Key
 # =========================
 @app.middleware("http")
 async def api_key_guard(request: Request, call_next):
     path = request.url.path
 
-    # Публичные/служебные — без ключа
+    # служебные и public — без ключа
     if (
         path in {"/", "/health", "/docs", "/openapi.json", "/redoc"}
         or path.startswith("/public")
     ):
         return await call_next(request)
 
-    # Всё остальное — под ключом (если ключ задан)
+    # остальное — под ключом (если ключ задан)
     if API_KEY and request.headers.get("X-API-Key") != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
@@ -104,11 +102,8 @@ async def public_product_info(product_id: int, city_id: Optional[str] = None):
         return r.json()
 
 # =========================
-# (опционально) PRIVATE API — если тебе нужны закрытые ручки "для себя"
-# Эти эндпоинты будут требовать X-API-Key (см. middleware выше).
+# (опционально) PRIVATE — для админки/скриптов (требует X-API-Key)
 # =========================
-@app.get("/private/offers/active")
-async def private_offers_active():
-    async with ChizhikAPI(proxy=PROXY, headless=HEADLESS) as api:
-        r = await api.Advertising.active_inout()
-        return r.json()
+@app.get("/private/ping")
+async def private_ping():
+    return {"ok": True, "private": True}
