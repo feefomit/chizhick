@@ -1,99 +1,55 @@
-let cityId = null;
-let categoryId = null;
-let page = 1;
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Чижик — витрина</title>
+  <style>
+    body { font-family: system-ui, Arial; margin: 20px; }
+    .row { display:flex; gap:12px; flex-wrap:wrap; }
+    .col { min-width: 260px; }
+    button { cursor:pointer; }
+    .list { border:1px solid #ddd; border-radius:10px; padding:10px; max-height: 260px; overflow:auto; }
+    .item { padding:8px; border-bottom:1px solid #eee; cursor:pointer; }
+    .item:last-child { border-bottom:none; }
+    .item:hover { background:#f7f7f7; }
+    .cards { display:grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap:12px; margin-top:12px;}
+    .card { border:1px solid #ddd; border-radius:12px; padding:12px; }
+    .muted { color:#666; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>Витрина Чижик</h1>
 
-const el = (id) => document.getElementById(id);
+  <div class="row">
+    <div class="col">
+      <h3>Город</h3>
+      <input id="cityQuery" placeholder="Начни вводить… (например, моск)" style="width:100%; padding:8px;" />
+      <button id="citySearch" style="margin-top:8px;">Найти</button>
+      <div class="list" id="cityList" style="margin-top:10px;"></div>
+      <div class="muted" id="selectedCity"></div>
+    </div>
 
-function renderList(container, items, onClick) {
-  container.innerHTML = "";
-  items.forEach((x) => {
-    const div = document.createElement("div");
-    div.className = "item";
-    div.textContent = x.name ?? x.title ?? JSON.stringify(x);
-    div.onclick = () => onClick(x);
-    container.appendChild(div);
-  });
-}
+    <div class="col">
+      <h3>Категории</h3>
+      <div class="list" id="catList"></div>
+    </div>
 
-async function api(path) {
-  const r = await fetch(path);
-  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
-  return r.json();
-}
+    <div class="col">
+      <h3>Акции</h3>
+      <div class="list" id="offersBox"></div>
+    </div>
+  </div>
 
-async function loadOffers() {
-  const data = await api("/public/offers/active");
-  // в quick start это объект с title/description... :contentReference[oaicite:2]{index=2}
-  el("offersBox").innerHTML = `
-    <div><b>${data.title ?? "Акции"}</b></div>
-    <div class="muted">${(data.description ?? "").replaceAll("\r\n","<br>")}</div>
-  `;
-}
+  <h3 style="margin-top:18px;">Товары</h3>
+  <div class="row" style="align-items:center;">
+    <input id="searchQuery" placeholder="Поиск по товарам…" style="padding:8px; min-width:260px;" />
+    <button id="doSearch">Искать</button>
+    <div class="muted" id="pageInfo"></div>
+  </div>
 
-async function searchCities() {
-  const q = el("cityQuery").value.trim();
-  if (!q) return;
-  const data = await api(`/public/geo/cities?search=${encodeURIComponent(q)}&page=1`);
-  renderList(el("cityList"), data.items ?? [], (c) => selectCity(c));
-}
+  <div class="cards" id="products"></div>
 
-async function selectCity(c) {
-  cityId = String(c.id);
-  el("selectedCity").textContent = `Выбран: ${c.name} (city_id=${cityId})`;
-  await loadCategories();
-  await loadProducts(true);
-}
-
-async function loadCategories() {
-  const cats = await api(`/public/catalog/tree?city_id=${encodeURIComponent(cityId)}`);
-  // дерево — список словарей, есть id/name :contentReference[oaicite:3]{index=3}
-  renderList(el("catList"), cats ?? [], (cat) => {
-    categoryId = cat.id;
-    page = 1;
-    loadProducts(true);
-  });
-}
-
-function pickPrice(p) {
-  // структура цены может отличаться — сделаем безопасно
-  if (p == null) return "";
-  if (typeof p === "number") return `${p} ₽`;
-  if (typeof p === "string") return p;
-  if (typeof p === "object") return p.value ? `${p.value} ₽` : (p.current ?? p.price ?? "");
-  return "";
-}
-
-async function loadProducts(reset = false) {
-  if (!cityId) return;
-  const q = el("searchQuery").value.trim();
-  const params = new URLSearchParams();
-  params.set("city_id", cityId);
-  params.set("page", String(page));
-  if (categoryId) params.set("category_id", String(categoryId));
-  if (q) params.set("search", q);
-
-  const data = await api(`/public/catalog/products?${params.toString()}`);
-  const items = data.items ?? [];
-  el("pageInfo").textContent = `Стр. ${data.previous ? data.previous + 1 : 1} / ${data.total_pages ?? "?"} (всего: ${data.count ?? "?"})`;
-
-  const grid = el("products");
-  if (reset) grid.innerHTML = "";
-
-  items.forEach((it) => {
-    const card = document.createElement("div");
-    card.className = "card";
-    const name = it.name ?? it.title ?? `ID ${it.id}`;
-    const price = pickPrice(it.price ?? it.prices);
-    card.innerHTML = `
-      <div><b>${name}</b></div>
-      <div class="muted">id: ${it.id}</div>
-      <div style="margin-top:8px">${price || "<span class='muted'>цена в данных не найдена</span>"}</div>
-    `;
-    grid.appendChild(card);
-  });
-}
-
-el("citySearch").onclick = () => searchCities();
-el("doSearch").onclick = () => { page = 1; loadProducts(true); };
-
-loadOffers().catch(console.error);
+  <script src="/static/app.js"></script>
+</body>
+</html>
