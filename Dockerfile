@@ -1,9 +1,8 @@
-# Образ Playwright уже содержит нужные системные зависимости для браузера
+# Playwright Python образ (вариант Ubuntu 24.04 / Python 3.12)
 FROM mcr.microsoft.com/playwright/python:v1.50.0-noble
 
 WORKDIR /app
 
-# ВАЖНО: кеши в доступные директории (на хостингах контейнер часто стартует не под root)
 ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -14,7 +13,7 @@ ENV PYTHONUNBUFFERED=1 \
 RUN mkdir -p /opt/camoufox-cache /opt/browser-cache /tmp \
  && chmod -R 777 /opt/camoufox-cache /opt/browser-cache /tmp
 
-# Python-зависимости
+# зависимости (отдельным слоем — быстрее пересборки)
 COPY requirements.txt /app/requirements.txt
 RUN pip install -U pip \
  && pip install -r /app/requirements.txt
@@ -22,11 +21,8 @@ RUN pip install -U pip \
 # Скачиваем camoufox в образ, чтобы на старте ничего не качалось
 RUN python -m camoufox fetch
 
-# Код приложения 
+# код
 COPY app.py /app/app.py
 
-# Timeweb ориентируется на EXPOSE
 EXPOSE 8080
-
-# Запуск (Timeweb обычно прокидывает PORT, но 8080 по умолчанию)
 CMD ["bash", "-lc", "uvicorn app:app --host 0.0.0.0 --port ${PORT:-8080}"]
