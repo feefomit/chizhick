@@ -1,54 +1,82 @@
 <!doctype html>
 <html lang="ru">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Чижик — витрина</title>
-  <style>
-    body { font-family: system-ui, Arial; margin: 20px; }
-    .row { display:flex; gap:12px; flex-wrap:wrap; }
-    .col { min-width: 260px; }
-    button { cursor:pointer; }
-    .list { border:1px solid #ddd; border-radius:10px; padding:10px; max-height: 260px; overflow:auto; }
-    .item { padding:8px; border-bottom:1px solid #eee; cursor:pointer; }
-    .item:last-child { border-bottom:none; }
-    .item:hover { background:#f7f7f7; }
-    .cards { display:grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap:12px; margin-top:12px;}
-    .card { border:1px solid #ddd; border-radius:12px; padding:12px; }
-    .muted { color:#666; font-size: 13px; }
-  </style>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Скидки и акции</title>
+  <link rel="stylesheet" href="/static/styles.css"/>
 </head>
 <body>
-  <h1>Витрина Чижик</h1>
+  <header class="header">
+    <div class="container header__row">
+      <div class="logo">Скидки</div>
 
-  <div class="row">
-    <div class="col">
-      <h3>Город</h3>
-      <input id="cityQuery" placeholder="Начни вводить… (например, моск)" style="width:100%; padding:8px;" />
-      <button id="citySearch" style="margin-top:8px;">Найти</button>
-      <div class="list" id="cityList" style="margin-top:10px;"></div>
-      <div class="muted" id="selectedCity"></div>
+      <button class="cityBtn" id="cityBtn" title="Выбрать город">
+        <span id="cityName">Город</span>
+        <span class="chev">▾</span>
+      </button>
+
+      <div class="search">
+        <input id="q" placeholder="Поиск товаров…" />
+        <button id="searchBtn">Найти</button>
+      </div>
     </div>
+  </header>
 
-    <div class="col">
-      <h3>Категории</h3>
-      <div class="list" id="catList"></div>
-    </div>
-
-    <div class="col">
-      <h3>Акции</h3>
-      <div class="list" id="offersBox"></div>
+  <!-- Модалка выбора города -->
+  <div class="modal" id="cityModal" hidden>
+    <div class="modal__backdrop" id="cityClose"></div>
+    <div class="modal__card">
+      <div class="modal__title">Выбор города</div>
+      <div class="modal__row">
+        <input id="cityQuery" placeholder="Например: моск, санкт…" />
+        <button id="citySearchBtn">Искать</button>
+      </div>
+      <div class="chips" id="popularCities"></div>
+      <div class="list" id="cityList"></div>
     </div>
   </div>
 
-  <h3 style="margin-top:18px;">Товары</h3>
-  <div class="row" style="align-items:center;">
-    <input id="searchQuery" placeholder="Поиск по товарам…" style="padding:8px; min-width:260px;" />
-    <button id="doSearch">Искать</button>
-    <div class="muted" id="pageInfo"></div>
-  </div>
+  <main class="container">
+    <!-- Категории -->
+    <section class="section">
+      <div class="section__head">
+        <h2>Категории</h2>
+        <div class="muted" id="catHint">Выберите город</div>
+      </div>
+      <div class="cats" id="cats"></div>
+    </section>
 
-  <div class="cards" id="products"></div>
+    <!-- Товары со скидками -->
+    <section class="section">
+      <div class="section__head">
+        <h2>Товары со скидками</h2>
+        <div class="muted" id="prodHint"></div>
+      </div>
+
+      <div class="grid" id="products"></div>
+
+      <div class="moreRow">
+        <button class="moreBtn" id="moreBtn" hidden>Показать ещё</button>
+      </div>
+    </section>
+
+    <!-- Города -->
+    <section class="section">
+      <div class="section__head">
+        <h2>Города</h2>
+        <div class="muted">Ниже — быстрый выбор, полный список через поиск</div>
+      </div>
+      <div class="citiesGrid" id="citiesGrid"></div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="container footer__row">
+      <div class="muted">Данные загружаются из “Чижик” через ваш API. Неофициальный интерфейс.</div>
+      <div class="muted">© <span id="year"></span></div>
+    </div>
+  </footer>
 
   <script src="/static/app.js"></script>
 </body>
