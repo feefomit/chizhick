@@ -34,3 +34,14 @@ async def cities(search: str = Query(...), page: int = 1, x_api_key: str | None 
     async with ChizhikAPI(proxy=PROXY, headless=HEADLESS) as api:
         r = await api.Geolocation.cities_list(search_name=search, page=page)
         return r.json()
+
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+# Статика: /static/app.js, /static/styles.css и т.п.
+app.mount("/static", StaticFiles(directory="site"), name="static")
+
+# Главная страница сайта
+@app.get("/", include_in_schema=False)
+async def site_index():
+    return FileResponse("site/index.html")
