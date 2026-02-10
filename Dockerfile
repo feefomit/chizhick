@@ -1,5 +1,5 @@
 # Образ Playwright уже содержит нужные системные зависимости для браузера
-FROM mcr.microsoft.com/playwright/python:v1.50.0-nobley
+FROM mcr.microsoft.com/playwright/python:v1.50.0-noble
 
 WORKDIR /app
 
