@@ -1,3 +1,9 @@
-fastapi
-uvicorn
+fastapi==0.115.8
+uvicorn[standard]==0.30.6
+
+# chizhik
 chizhik-api
+
+# cache
+redis>=5.0.0
+fastapi-cache2>=0.2.2
