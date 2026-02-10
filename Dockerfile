@@ -22,9 +22,8 @@ RUN pip install -U pip \
 # Скачиваем camoufox в образ, чтобы на старте ничего не качалось
 RUN python -m camoufox fetch
 
-# Код приложения + сайт
+# Код приложения 
 COPY app.py /app/app.py
-COPY site /app/site
 
 # Timeweb ориентируется на EXPOSE
 EXPOSE 8080
