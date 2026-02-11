@@ -18,8 +18,16 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install -U pip \
  && pip install -r /app/requirements.txt
 
-# Скачиваем camoufox в образ, чтобы на старте ничего не качалось
-RUN python -m camoufox fetch
+# Скачиваем camoufox в образ (с повторами)
+RUN bash -lc 'set -euo pipefail; \
+  echo "Camoufox fetch..."; \
+  for i in 1 2 3 4 5; do \
+    echo "Attempt $i"; \
+    python -m camoufox fetch && break || true; \
+    sleep $((i*20)); \
+  done; \
+  python -m camoufox path >/dev/null'
+
 
 # код
 COPY app.py /app/app.py
