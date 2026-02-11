@@ -4,6 +4,13 @@ uvicorn[standard]==0.30.6
 # chizhik
 chizhik-api
 
+# browser deps (нужно для camoufox/playwright)
+playwright==1.50.0
+camoufox
+
 # cache
 redis>=5.0.0
 fastapi-cache2>=0.2.2
+
+# быстрее JSON (опционально, но приятно)
+orjson>=3.9.0
