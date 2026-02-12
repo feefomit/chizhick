@@ -2,12 +2,7 @@ fastapi==0.115.8
 uvicorn[standard]==0.30.6
 
 # chizhik
-chizhik-api
-
-# browser deps
-playwright==1.50.0
-camoufox
-orjson>=3.9.0
+chizhik-api==0.2.3
 
 # cache
 redis>=5.0.0
