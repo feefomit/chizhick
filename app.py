@@ -45,7 +45,7 @@ try:
 except Exception:
     redis = None
 
-# Один “живой” ChizhikAPI на всё приложение
+# Один "живой" ChizhikAPI на всё приложение
 _api = None
 _api_lock = asyncio.Lock()
 _warmup_state = {"status": "starting", "error": None}
@@ -182,7 +182,8 @@ async def api_key_guard(request: Request, call_next):
         return await call_next(request)
 
     path = request.url.path
-    if path in PUBLIC_PATHS or path.startswith("/api"):
+    # ИСПРАВЛЕНО: изменен префикс с /api на /public
+    if path in PUBLIC_PATHS or path.startswith("/public"):
         return await call_next(request)
 
     if path.startswith("/private") and API_KEY and request.headers.get("X-API-Key") != API_KEY:
@@ -209,9 +210,9 @@ async def favicon():
     return Response(status_code=204)
 
 
-# -------- API --------
+# -------- PUBLIC API --------
 
-@app.get("/api/geo/cities")
+@app.get("/public/geo/cities")
 async def geo_cities(search: str = Query(...), page: int = 1):
     key = _cache_key("geo", "cities", search, page)
     cached = await cache_get_json(key)
@@ -230,7 +231,7 @@ async def geo_cities(search: str = Query(...), page: int = 1):
         return JSONResponse({"detail": "Upstream error", "error": str(e)}, status_code=503)
 
 
-@app.get("/api/offers/active")
+@app.get("/public/offers/active")
 async def offers_active():
     key = "offers:active"
     cached = await cache_get_json(key)
@@ -249,7 +250,7 @@ async def offers_active():
         return JSONResponse({"detail": "Upstream error", "error": str(e)}, status_code=503)
 
 
-@app.get("/api/catalog/tree")
+@app.get("/public/catalog/tree")
 async def catalog_tree(city_id: str):
     key = _cache_key("catalog", "tree", city_id)
     cached = await cache_get_json(key)
@@ -275,7 +276,7 @@ async def catalog_tree(city_id: str):
         await cache_unlock(lock_key)
 
 
-@app.get("/api/catalog/products")
+@app.get("/public/catalog/products")
 async def catalog_products(
     city_id: str,
     page: int = 1,
@@ -287,7 +288,7 @@ async def catalog_products(
     if cached is not None:
         return cached
 
-    # защита от “кликов” по одной и той же категории
+    # защита от "кликов" по одной и той же категории
     lock_key = _cache_key("lock", "products", city_id, category_id, search, page)
     if not await cache_lock(lock_key, ttl=60):
         return JSONResponse({"status": "building"}, status_code=202)
@@ -311,7 +312,7 @@ async def catalog_products(
         await cache_unlock(lock_key)
 
 
-@app.get("/api/product/info")
+@app.get("/public/product/info")
 async def product_info(product_id: int, city_id: Optional[str] = None):
     key = _cache_key("product", "info", product_id, city_id)
     cached = await cache_get_json(key)
@@ -330,7 +331,8 @@ async def product_info(product_id: int, city_id: Optional[str] = None):
         return JSONResponse({"detail": "Upstream error", "error": str(e)}, status_code=503)
 
 
-# private
+# -------- PRIVATE API --------
+
 @app.get("/private/ping")
 async def private_ping():
     return {"ok": True, "private": True}
