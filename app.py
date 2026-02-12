@@ -416,7 +416,7 @@ async def product_info(product_id: int, city_id: Optional[str] = None):
 
 # =========================
 # PRIVATE (под API_KEY)
-# =========================
+# ==========================
 @app.get("/private/ping")
 async def private_ping():
     return {"ok": True, "private": True}
