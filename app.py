@@ -28,33 +28,28 @@ except Exception:
 # =========================
 # ENV
 # =========================
-API_KEY = os.getenv("API_KEY")  # защищает всё, что НЕ /public/*
-PROXY = os.getenv("CHIZHIK_PROXY")  # опционально: user:pass@host:port
+API_KEY = (os.getenv("API_KEY") or "").strip()  # защищает всё, что НЕ /public/* и НЕ /api/*
+PROXY = os.getenv("CHIZHIK_PROXY")  # опционально
 HEADLESS = os.getenv("CHIZHIK_HEADLESS", "true").lower() == "true"
 
-# CORS
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "https://chizhick.ru,https://www.chizhick.ru,*")
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "https://chizhick.ru,https://www.chizhick.ru")
 ALLOWED_ORIGINS_LIST = [x.strip() for x in ALLOWED_ORIGINS.split(",") if x.strip()]
 
-REDIS_URL = os.getenv("REDIS_URL")  # пример: redis://default:%29...@192.168.0.5:6379/0
+REDIS_URL = os.getenv("REDIS_URL")  # redis://default:%29...@192.168.0.5:6379/0
 
-# Camoufox warmup (Вариант B)
+# Warmup (вариант B)
 CAMOUFOX_WARMUP = os.getenv("CAMOUFOX_WARMUP", "1").lower() in ("1", "true", "yes", "on")
 WARMUP_TIMEOUT_SEC = int(os.getenv("CAMOUFOX_WARMUP_TIMEOUT_SEC", "3600"))  # до 1 часа
-MAX_CONCURRENCY = int(os.getenv("CHIZHIK_MAX_CONCURRENCY", "1"))  # чтобы не падал браузер по памяти
+MAX_CONCURRENCY = int(os.getenv("CHIZHIK_MAX_CONCURRENCY", "1"))
 
-# =========================
-# App
-# =========================
 app = FastAPI(title="Chizhik Catalog Backend", version="1.0.0")
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
-# CORS (если указано "*" — разрешаем всем; allow_credentials=False позволяет wildcard)
-allow_all = "*" in ALLOWED_ORIGINS_LIST
+# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if allow_all else ALLOWED_ORIGINS_LIST,
+    allow_origins=ALLOWED_ORIGINS_LIST if ALLOWED_ORIGINS_LIST else ["*"],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -66,7 +61,10 @@ PUBLIC_PATHS = {
     "/favicon.ico",
 }
 
-# Warmup state
+# ВАЖНО: эти префиксы должны быть доступны без API_KEY
+PUBLIC_PREFIXES = ("/public", "/api")
+
+# warmup state
 _ready_evt = asyncio.Event()
 _ready_err: Optional[str] = None
 _sem = asyncio.Semaphore(MAX_CONCURRENCY)
@@ -80,8 +78,8 @@ async def api_key_guard(request: Request, call_next):
 
     path = request.url.path
 
-    # public + служебные — без ключа
-    if path in PUBLIC_PATHS or path.startswith("/public"):
+    # служебные и API — без ключа
+    if path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES):
         return await call_next(request)
 
     # остальное — под ключом (если ключ задан)
@@ -91,22 +89,30 @@ async def api_key_guard(request: Request, call_next):
     return await call_next(request)
 
 
+def _camoufox_installed() -> bool:
+    try:
+        p = subprocess.run(["python", "-m", "camoufox", "path"], capture_output=True, text=True)
+        return p.returncode == 0
+    except Exception:
+        return False
+
+
 async def _camoufox_fetch_if_needed():
-    """
-    Вариант B: не качаем camoufox на build, а качаем на старте.
-    Делается в фоне, чтобы /health сразу был 200.
-    """
+    """Вариант B: не качаем camoufox на build, а качаем на старте (в фоне)."""
     global _ready_err
 
     if not CAMOUFOX_WARMUP:
         _ready_evt.set()
         return
 
+    if _camoufox_installed():
+        _ready_evt.set()
+        return
+
     try:
-        # Пробуем "на всякий" импортировать camoufox — если пакета нет, будет ошибка
+        # наличие пакета
         import camoufox  # noqa: F401
 
-        # Запускаем fetch (если уже скачано — обычно быстро и без докачки)
         proc = await asyncio.create_subprocess_exec(
             "python", "-m", "camoufox", "fetch",
             stdout=asyncio.subprocess.PIPE,
@@ -153,7 +159,7 @@ async def on_startup():
         r = redis.from_url(REDIS_URL, encoding="utf-8", decode_responses=True)
         FastAPICache.init(RedisBackend(r), prefix="chizhik")
 
-    # warmup в фоне
+    # warmup в фоне (не блокирует /health)
     asyncio.create_task(_camoufox_fetch_if_needed())
 
 
@@ -167,7 +173,6 @@ async def root():
 @app.get("/health", include_in_schema=False)
 @app.get("/health/", include_in_schema=False)
 async def health():
-    # всегда 200 (иначе Timeweb завалит деплой)
     return {
         "ok": True,
         "cache": "redis" if REDIS_URL else "none",
@@ -181,44 +186,46 @@ async def favicon():
 
 
 # =========================
-# PUBLIC API
+# API (и /public, и /api — одно и то же)
 # =========================
+
 @app.get("/public/geo/cities")
-@cache(expire=60 * 60 * 24)  # 24 часа
-async def public_cities(search: str = Query(...), page: int = 1):
+@app.get("/api/geo/cities")
+@cache(expire=60 * 60 * 24)
+async def cities(search: str = Query(...), page: int = 1):
     await _ensure_ready_or_503()
     from chizhik_api import ChizhikAPI
-
     async with _sem:
         async with ChizhikAPI(proxy=PROXY, headless=HEADLESS) as api:
             r = await api.Geolocation.cities_list(search_name=search, page=page)
             return r.json()
 
 @app.get("/public/offers/active")
-@cache(expire=60 * 10)  # 10 минут
-async def public_offers_active():
+@app.get("/api/offers/active")
+@cache(expire=60 * 10)
+async def offers_active():
     await _ensure_ready_or_503()
     from chizhik_api import ChizhikAPI
-
     async with _sem:
         async with ChizhikAPI(proxy=PROXY, headless=HEADLESS) as api:
             r = await api.Advertising.active_inout()
             return r.json()
 
 @app.get("/public/catalog/tree")
-@cache(expire=60 * 60 * 12)  # 12 часов
-async def public_catalog_tree(city_id: str):
+@app.get("/api/catalog/tree")
+@cache(expire=60 * 60 * 12)
+async def catalog_tree(city_id: str):
     await _ensure_ready_or_503()
     from chizhik_api import ChizhikAPI
-
     async with _sem:
         async with ChizhikAPI(proxy=PROXY, headless=HEADLESS) as api:
             r = await api.Catalog.tree(city_id=city_id)
             return r.json()
 
 @app.get("/public/catalog/products")
-@cache(expire=60 * 5)  # 5 минут
-async def public_catalog_products(
+@app.get("/api/catalog/products")
+@cache(expire=60 * 5)
+async def catalog_products(
     city_id: str,
     page: int = 1,
     category_id: Optional[int] = None,
@@ -226,7 +233,6 @@ async def public_catalog_products(
 ):
     await _ensure_ready_or_503()
     from chizhik_api import ChizhikAPI
-
     async with _sem:
         async with ChizhikAPI(proxy=PROXY, headless=HEADLESS) as api:
             r = await api.Catalog.products_list(
@@ -238,11 +244,11 @@ async def public_catalog_products(
             return r.json()
 
 @app.get("/public/product/info")
-@cache(expire=60 * 60)  # 1 час
-async def public_product_info(product_id: int, city_id: Optional[str] = None):
+@app.get("/api/product/info")
+@cache(expire=60 * 60)
+async def product_info(product_id: int, city_id: Optional[str] = None):
     await _ensure_ready_or_503()
     from chizhik_api import ChizhikAPI
-
     async with _sem:
         async with ChizhikAPI(proxy=PROXY, headless=HEADLESS) as api:
             r = await api.Catalog.Product.info(product_id=product_id, city_id=city_id)
@@ -250,7 +256,7 @@ async def public_product_info(product_id: int, city_id: Optional[str] = None):
 
 
 # =========================
-# PRIVATE
+# PRIVATE (под ключом)
 # =========================
 @app.get("/private/ping")
 async def private_ping():
