@@ -1,4 +1,8 @@
 import os
+os.environ.setdefault("HOME", "/opt/home")
+os.environ.setdefault("XDG_CACHE_HOME", "/opt/xdg-cache")
+os.environ.setdefault("CAMOUFOX_CACHE_DIR", "/opt/camoufox-cache")
+
 import json
 import asyncio
 import logging
