@@ -1,26 +1,26 @@
-FROM mcr.microsoft.com/playwright/python:v1.50.0-noble
+# syntax=docker/dockerfile:1.6
+FROM mcr.microsoft.com/playwright/python:v1.50.0-jammy
 
 WORKDIR /app
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
-    HOME=/tmp \
-    XDG_CACHE_HOME=/tmp \
-    CAMOUFOX_CACHE_DIR=/tmp/camoufox-cache \
-    PLAYWRIGHT_BROWSERS_PATH=/tmp/browser-cache
+    CAMOUFOX_CACHE_DIR=/opt/camoufox-cache \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/browser-cache \
+    HOME=/tmp
 
-RUN mkdir -p /tmp/camoufox-cache /tmp/browser-cache /tmp \
- && chmod -R 777 /tmp/camoufox-cache /tmp/browser-cache /tmp
+RUN mkdir -p /opt/camoufox-cache /opt/browser-cache /tmp \
+ && chmod -R 777 /opt/camoufox-cache /opt/browser-cache /tmp
 
 COPY requirements.txt /app/requirements.txt
-RUN pip install -U pip && pip install -r /app/requirements.txt
+
+# кеш pip (если у Timeweb включён BuildKit — ускоряет пересборки)
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -U pip && pip install -r /app/requirements.txt
 
 COPY app.py /app/app.py
 
 EXPOSE 8080
 
-# Явный healthcheck
-HEALTHCHECK --interval=10s --timeout=3s --retries=10 CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:' + str(int(__import__('os').getenv('PORT','8080'))) + '/health').read()" || exit 1
-
-CMD ["bash", "-lc", "uvicorn app:app --host 0.0.0.0 --port ${PORT:-8080} --workers 1"]
+CMD ["bash", "-lc", "uvicorn app:app --host 0.0.0.0 --port ${PORT:-8080}"]
