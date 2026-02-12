@@ -1,8 +1,19 @@
 import os
+
+# --- PY<3.12 compatibility: provide typing.override ---
+import typing
+if not hasattr(typing, "override"):
+    def override(func):
+        return func
+    typing.override = override
+# ------------------------------------------------------
+
 import asyncio
 import subprocess
 import logging
-from typing import Optional
+import json
+import time
+from typing import Optional, Any
 
 from fastapi import FastAPI, Query, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,8 +26,8 @@ log = logging.getLogger("chizhik-backend")
 # =========================
 # ENV
 # =========================
-API_KEY = (os.getenv("API_KEY") or "").strip()  # защищает всё, что НЕ /public/* и НЕ /api/*
-PROXY = os.getenv("CHIZHIK_PROXY")  # опционально
+API_KEY = (os.getenv("API_KEY") or "").strip()  # защищает только НЕ /api и НЕ /public
+PROXY = os.getenv("CHIZHIK_PROXY")
 HEADLESS = os.getenv("CHIZHIK_HEADLESS", "true").lower() == "true"
 
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "https://chizhick.ru,https://www.chizhick.ru")
@@ -24,21 +35,23 @@ ALLOWED_ORIGINS_LIST = [x.strip() for x in ALLOWED_ORIGINS.split(",") if x.strip
 
 REDIS_URL = os.getenv("REDIS_URL")  # redis://default:%29...@192.168.0.5:6379/0
 
-# Warmup (вариант B)
+# Warmup camoufox (вариант B)
 CAMOUFOX_WARMUP = os.getenv("CAMOUFOX_WARMUP", "1").lower() in ("1", "true", "yes", "on")
-WARMUP_TIMEOUT_SEC = int(os.getenv("CAMOUFOX_WARMUP_TIMEOUT_SEC", "3600"))  # до 1 часа
+WARMUP_TIMEOUT_SEC = int(os.getenv("CAMOUFOX_WARMUP_TIMEOUT_SEC", "3600"))
 
-# Ограничение параллельности (очень важно для памяти/крашей браузера)
+# Ограничение параллельности и таймауты
 MAX_CONCURRENCY = int(os.getenv("CHIZHIK_MAX_CONCURRENCY", "1"))
+CHIZHIK_TIMEOUT_SEC = int(os.getenv("CHIZHIK_TIMEOUT_SEC", "45"))
 
-# Таймаут на запрос к парсеру
-CHIZHIK_TIMEOUT_SEC = int(os.getenv("CHIZHIK_TIMEOUT_SEC", "60"))
+# Tree ускорение
+TREE_TTL = int(os.getenv("TREE_TTL", str(60 * 60 * 12)))  # 12 часов
+TREE_BUILD_TIMEOUT = int(os.getenv("TREE_BUILD_TIMEOUT", "20"))  # 20 сек
 
 # =========================
 # Cache (fastapi-cache2)
 # =========================
-cache_ready = False
 cache_backend_name = "none"
+
 try:
     import redis.asyncio as redis
     from fastapi_cache import FastAPICache
@@ -51,11 +64,16 @@ except Exception:
     RedisBackend = None
     InMemoryBackend = None
 
-    def cache(*args, **kwargs):  # no-op
+    def cache(*args, **kwargs):  # no-op decorator
         def wrap(fn):
             return fn
         return wrap
 
+# Redis client for manual caching (tree)
+rds = None  # type: ignore
+
+# In-memory fallback cache for tree (если Redis нет)
+_local_tree_cache: dict[str, tuple[float, Any]] = {}
 
 # =========================
 # App
@@ -77,9 +95,10 @@ PUBLIC_PATHS = {
     "/docs", "/openapi.json", "/redoc",
     "/favicon.ico",
 }
-PUBLIC_PREFIXES = ("/public", "/api")  # <- ВАЖНО: /api без ключа
 
-# warmup state
+# /api и /public всегда доступны без ключа
+PUBLIC_PREFIXES = ("/api", "/public")
+
 _ready_evt = asyncio.Event()
 _ready_err: Optional[str] = None
 _sem = asyncio.Semaphore(MAX_CONCURRENCY)
@@ -92,11 +111,9 @@ async def api_key_guard(request: Request, call_next):
 
     path = request.url.path
 
-    # служебные и API — без ключа
     if path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES):
         return await call_next(request)
 
-    # остальное — под ключом (если ключ задан)
     if API_KEY and request.headers.get("X-API-Key") != API_KEY:
         return JSONResponse({"detail": "Invalid API key"}, status_code=401)
 
@@ -112,7 +129,7 @@ def _camoufox_installed() -> bool:
 
 
 async def _camoufox_fetch_if_needed():
-    """Вариант B: качаем camoufox на старте в фоне, /health всегда 200."""
+    """Вариант B: camoufox fetch на старте в фоне. /health всегда 200."""
     global _ready_err
 
     if not CAMOUFOX_WARMUP:
@@ -160,56 +177,106 @@ async def _ensure_ready_or_503():
     if not CAMOUFOX_WARMUP:
         return
     if not _ready_evt.is_set():
-        raise HTTPException(status_code=503, detail="Browser warming up, try again in ~1-3 minutes")
+        raise HTTPException(status_code=503, detail="Browser warming up, retry in 10–60s")
     if _ready_err:
         raise HTTPException(status_code=503, detail=_ready_err)
 
 
 def _looks_like_browser_crash(e: Exception) -> bool:
     s = str(e).lower()
-    return "page crashed" in s or "target closed" in s or "browser has been closed" in s
+    return ("page crashed" in s) or ("target closed" in s) or ("browser has been closed" in s)
 
 
 async def _call_chizhik(fn):
-    """Обернём вызов, чтобы не получать 500 — вместо этого вернём 503."""
+    """Обёртка: любые проблемы upstream превращаем в 503 (а не 500)."""
     try:
         async with _sem:
             return await asyncio.wait_for(fn(), timeout=CHIZHIK_TIMEOUT_SEC)
     except HTTPException:
         raise
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=503, detail="Upstream timeout. Retry in 10–30s")
     except Exception as e:
-        log.exception("Chizhik call failed: %s", e)
+        log.exception("Upstream error: %s", e)
         if _looks_like_browser_crash(e):
             raise HTTPException(status_code=503, detail="Upstream browser crashed. Retry in 10–30s")
         raise HTTPException(status_code=503, detail="Upstream error. Retry in 10–30s")
 
 
+async def cache_get_json(key: str):
+    """Redis -> json; fallback -> in-memory TTL."""
+    now = time.time()
+
+    if rds:
+        try:
+            v = await rds.get(key)
+            if v:
+                return json.loads(v)
+        except Exception:
+            pass
+
+    item = _local_tree_cache.get(key)
+    if not item:
+        return None
+    exp, data = item
+    if exp < now:
+        _local_tree_cache.pop(key, None)
+        return None
+    return data
+
+
+async def cache_set_json(key: str, data: Any, ttl: int):
+    """Сохраняем в Redis (если есть), иначе в память."""
+    now = time.time()
+    _local_tree_cache[key] = (now + ttl, data)
+
+    if rds:
+        try:
+            await rds.set(key, json.dumps(data, ensure_ascii=False), ex=ttl)
+        except Exception:
+            pass
+
+
+async def _prefetch_tree(city_id: str):
+    """Фоновая сборка дерева и запись в кэш."""
+    from chizhik_api import ChizhikAPI
+
+    async def run():
+        async with ChizhikAPI(proxy=PROXY, headless=HEADLESS) as api:
+            r = await api.Catalog.tree(city_id=city_id)
+            return r.json()
+
+    try:
+        data = await _call_chizhik(run)
+        await cache_set_json(f"tree:{city_id}", data, TREE_TTL)
+    except Exception:
+        pass
+
+
 @app.on_event("startup")
 async def on_startup():
-    """Критично: кэш всегда инициализируем (Redis или InMemory), иначе @cache даёт 500."""
-    global cache_ready, cache_backend_name
+    """Важное: инициализируем FastAPICache всегда (Redis или Memory), чтобы @cache не давал 500."""
+    global rds, cache_backend_name
 
-    if FastAPICache is not None:
-        # 1) пробуем Redis
-        if REDIS_URL and redis and RedisBackend:
-            try:
-                r = redis.from_url(REDIS_URL, encoding="utf-8", decode_responses=True)
-                await asyncio.wait_for(r.ping(), timeout=3)
-                FastAPICache.init(RedisBackend(r), prefix="chizhik")
-                cache_ready = True
-                cache_backend_name = "redis"
-                log.info("Cache backend: redis")
-            except Exception as e:
-                log.warning("Redis cache init failed, fallback to memory: %s", e)
+    # 1) Redis
+    if REDIS_URL and redis and FastAPICache and RedisBackend:
+        try:
+            rds = redis.from_url(REDIS_URL, encoding="utf-8", decode_responses=True)
+            await asyncio.wait_for(rds.ping(), timeout=3)
+            FastAPICache.init(RedisBackend(rds), prefix="chizhik")
+            cache_backend_name = "redis"
+            log.info("Cache backend: redis")
+        except Exception as e:
+            log.warning("Redis init failed, fallback to memory: %s", e)
+            rds = None
 
-        # 2) fallback: InMemory (чтобы @cache не падал)
-        if not cache_ready and InMemoryBackend:
-            FastAPICache.init(InMemoryBackend(), prefix="chizhik")
-            cache_ready = True
-            cache_backend_name = "memory"
-            log.info("Cache backend: memory")
+    # 2) Fallback memory
+    if (cache_backend_name == "none") and FastAPICache and InMemoryBackend:
+        FastAPICache.init(InMemoryBackend(), prefix="chizhik")
+        cache_backend_name = "memory"
+        log.info("Cache backend: memory")
 
-    # warmup в фоне (не блокирует /health)
+    # Warmup в фоне
     asyncio.create_task(_camoufox_fetch_if_needed())
 
 
@@ -236,11 +303,11 @@ async def favicon():
 
 
 # =========================
-# API (и /public, и /api — одно и то же)
+# API (дублируем /api и /public)
 # =========================
 
-@app.get("/public/geo/cities")
 @app.get("/api/geo/cities")
+@app.get("/public/geo/cities")
 @cache(expire=60 * 60 * 24)
 async def cities(search: str = Query(...), page: int = 1):
     await _ensure_ready_or_503()
@@ -254,8 +321,8 @@ async def cities(search: str = Query(...), page: int = 1):
     return await _call_chizhik(run)
 
 
-@app.get("/public/offers/active")
 @app.get("/api/offers/active")
+@app.get("/public/offers/active")
 @cache(expire=60 * 10)
 async def offers_active():
     await _ensure_ready_or_503()
@@ -269,23 +336,46 @@ async def offers_active():
     return await _call_chizhik(run)
 
 
-@app.get("/public/catalog/tree")
 @app.get("/api/catalog/tree")
-@cache(expire=60 * 60 * 12)
+@app.get("/public/catalog/tree")
 async def catalog_tree(city_id: str):
+    """
+    Быстрое дерево:
+    - Redis HIT -> сразу
+    - Redis MISS -> пытаемся собрать за TREE_BUILD_TIMEOUT сек
+    - не успели -> 202 и сборка в фоне (следующий запрос будет HIT)
+    """
     await _ensure_ready_or_503()
+
+    key = f"tree:{city_id}"
+    cached = await cache_get_json(key)
+    if cached is not None:
+        return JSONResponse(cached, headers={"X-Cache": "HIT"})
+
     from chizhik_api import ChizhikAPI
 
-    async def run():
+    async def build():
         async with ChizhikAPI(proxy=PROXY, headless=HEADLESS) as api:
             r = await api.Catalog.tree(city_id=city_id)
             return r.json()
 
-    return await _call_chizhik(run)
+    try:
+        data = await asyncio.wait_for(_call_chizhik(build), timeout=TREE_BUILD_TIMEOUT)
+        await cache_set_json(key, data, TREE_TTL)
+        return JSONResponse(data, headers={"X-Cache": "MISS"})
+    except asyncio.TimeoutError:
+        asyncio.create_task(_prefetch_tree(city_id))
+        return JSONResponse(
+            {"detail": "Building categories tree, retry in 5-15 seconds"},
+            status_code=202
+        )
+    except HTTPException as e:
+        # уже нормализовано в 503, просто пробрасываем
+        raise e
 
 
-@app.get("/public/catalog/products")
 @app.get("/api/catalog/products")
+@app.get("/public/catalog/products")
 @cache(expire=60 * 5)
 async def catalog_products(
     city_id: str,
@@ -309,8 +399,8 @@ async def catalog_products(
     return await _call_chizhik(run)
 
 
-@app.get("/public/product/info")
 @app.get("/api/product/info")
+@app.get("/public/product/info")
 @cache(expire=60 * 60)
 async def product_info(product_id: int, city_id: Optional[str] = None):
     await _ensure_ready_or_503()
@@ -324,6 +414,9 @@ async def product_info(product_id: int, city_id: Optional[str] = None):
     return await _call_chizhik(run)
 
 
+# =========================
+# PRIVATE (под API_KEY)
+# =========================
 @app.get("/private/ping")
 async def private_ping():
     return {"ok": True, "private": True}
